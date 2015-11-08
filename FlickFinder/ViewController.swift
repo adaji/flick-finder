@@ -17,6 +17,12 @@ let SAFE_SEARCH = "1"
 let EXTRAS = "url_m"
 let DATA_FORMAT = "json"
 let NO_JSON_CALLBACK = "1"
+let BOUNDING_BOX_HALF_WIDTH = 1.0
+let BOUNDING_BOX_HALF_HEIGHT = 1.0
+let LAT_MIN = -90.0
+let LAT_MAX = 90.0
+let LON_MIN = -180.0
+let LON_MAX = 180.0
 
 class ViewController: UIViewController, UITextFieldDelegate {
     
@@ -29,7 +35,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
     @IBOutlet weak var longitudeField: UITextField!
     @IBOutlet weak var titleLabel: UILabel!
     
-    var keyboardIsShowing: Bool!
+    var tapRecognizer: UITapGestureRecognizer? = nil
     
     // MARK: Actions
     
@@ -38,24 +44,76 @@ class ViewController: UIViewController, UITextFieldDelegate {
     }
     
     func searchImageByPhrase() {
+        if phraseField.isFirstResponder() {
+            phraseField.resignFirstResponder()
+        }
+        
         resetView()
-        imageLabel.text = "Searching..."
-        getImageFromFlickr()
-    }
-    
-    // MARK: Flickr API
-    
-    func getImageFromFlickr() {
+
+        let phrase = phraseField.text!
+        imageLabel.text = "Searching for \(phrase) image..."
+        titleLabel.text = "(\(phrase)) "
+        phraseField.text = ""
+
         let methodArguments = [
             "method": METHOD_NAME,
             "api_key": API_KEY,
-            "text": phraseField.text!,
+            "text": phrase,
             "safe_search": SAFE_SEARCH,
             "extras": EXTRAS,
             "format": DATA_FORMAT,
             "nojsoncallback": NO_JSON_CALLBACK
         ]
+        getImageFromFlickr(methodArguments)
+    }
+    
+    @IBAction func searchByLatLon(sender: UIButton) {
+        searchImageByLatLon()
+    }
+    
+    func searchImageByLatLon() {
+        if latitudeField.isFirstResponder() {
+            latitudeField.resignFirstResponder()
+        }
+        else if longitudeField.isFirstResponder() {
+            longitudeField.isFirstResponder()
+        }
         
+        resetView()
+
+        let lat = latitudeField.text!
+        let lon = longitudeField.text!
+        let loc = "(\(lat), \(lon))"
+        imageLabel.text = "Searching for image at \(loc)..."
+        titleLabel.text = "\(loc) "
+        latitudeField.text = ""
+        longitudeField.text = ""
+
+        let methodArguments = [
+            "method": METHOD_NAME,
+            "api_key": API_KEY,
+            "bbox": createBoundingBoxString(lat, longitude: lon),
+            "safe_search": SAFE_SEARCH,
+            "extras": EXTRAS,
+            "format": DATA_FORMAT,
+            "nojsoncallback": NO_JSON_CALLBACK
+        ]
+        getImageFromFlickr(methodArguments)
+    }
+    
+    func createBoundingBoxString(latitude: String, longitude: String) -> String {
+        let lat = (latitude as NSString).doubleValue
+        let lon = (longitude as NSString).doubleValue
+        let lon_min = max(lon - BOUNDING_BOX_HALF_WIDTH, LON_MIN)
+        let lat_min = max(lat - BOUNDING_BOX_HALF_HEIGHT, LAT_MIN)
+        let lon_max = min(lon + BOUNDING_BOX_HALF_WIDTH, LON_MAX)
+        let lat_max = min(lat + BOUNDING_BOX_HALF_HEIGHT, LAT_MAX)
+        return "\(lon_min), \(lat_min), \(lon_max), \(lat_max)"
+    }
+    
+    // MARK: Flickr API
+    
+    func getImageFromFlickr(methodArguments: [String: String]) {
         let session = NSURLSession.sharedSession()
         let urlString = BASE_URL + escapedParameters(methodArguments)
         let request = NSURLRequest(URL: NSURL(string: urlString)!)
@@ -86,7 +144,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
                                         dispatch_async(dispatch_get_main_queue(), {
                                             self.imageLabel.alpha = 0.0 // * Is this more efficient than ".hidden = true" ?
                                             self.imageView.image = UIImage(data: imageData)
-                                            self.titleLabel.text = imageTitle ?? "(Untitled)"
+                                            self.titleLabel.text = self.titleLabel.text! + (imageTitle ?? "(Untitled)")
                                         })
                                     }
                                 }
@@ -110,16 +168,13 @@ class ViewController: UIViewController, UITextFieldDelegate {
         task.resume()
     }
     
-    @IBAction func searchByLatLon(sender: UIButton) {
-        
-    }
-    
     // MARK: Life Cycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
         
-        keyboardIsShowing = false
+        tapRecognizer = UITapGestureRecognizer(target: self, action: "handleSingleTap:")
+        tapRecognizer?.numberOfTapsRequired = 1
 
         phraseField.delegate = self
         latitudeField.delegate = self
@@ -128,23 +183,21 @@ class ViewController: UIViewController, UITextFieldDelegate {
     
     override func viewWillAppear(animated: Bool) {
         super.viewWillAppear(animated)
-        
+
+        addKeyboardDismissRecognizer()
+
         subscribeToKeyboardNotifications()
     }
     
     override func viewWillDisappear(animated: Bool) {
         super.viewWillDisappear(animated)
         
+        removeKeyboardDismissRecognizer()
+
         unsubscribeToKeyboardNotifications()
     }
 
     // MARK: Text Field Delegate
-    
-    func textFieldShouldBeginEditing(textField: UITextField) -> Bool {
-        addKeyboardDismissRecognizer()
-        
-        return true
-    }
     
     func textFieldShouldReturn(textField: UITextField) -> Bool {
         if textField == phraseField {
@@ -152,12 +205,14 @@ class ViewController: UIViewController, UITextFieldDelegate {
             
             searchImageByPhrase()
         }
-        
-        return true
-    }
-    
-    func textFieldShouldEndEditing(textField: UITextField) -> Bool {
-        removeKeyboardDismissRecognizer()
+        else if textField == latitudeField {
+            longitudeField.becomeFirstResponder()
+        }
+        else if textField == longitudeField {
+            textField.resignFirstResponder()
+            
+            searchImageByLatLon()
+        }
         
         return true
     }
@@ -167,24 +222,15 @@ class ViewController: UIViewController, UITextFieldDelegate {
     // Adjust view frame when keyboard shows/hides
     
     func addKeyboardDismissRecognizer() {
-        let recognizer = UITapGestureRecognizer(target: self, action: "handleSingleTap:")
-        view.addGestureRecognizer(recognizer)
+        view.addGestureRecognizer(tapRecognizer!)
     }
     
     func removeKeyboardDismissRecognizer() {
-        //        view.removeGestureRecognizer(recognizer)
+        view.removeGestureRecognizer(tapRecognizer!)
     }
     
     func handleSingleTap(recognizer: UITapGestureRecognizer) {
-        if phraseField.isFirstResponder() {
-            phraseField.resignFirstResponder()
-        }
-        else if latitudeField.isFirstResponder() {
-            latitudeField.resignFirstResponder()
-        }
-        else if longitudeField.isFirstResponder() {
-            longitudeField.resignFirstResponder()
-        }
+        view.endEditing(true)
     }
     
     func subscribeToKeyboardNotifications() {
@@ -197,22 +243,15 @@ class ViewController: UIViewController, UITextFieldDelegate {
     }
     
     func keyboardWillShow(notification: NSNotification) {
-        if !keyboardIsShowing! {
-            moveViewVertically(getKeyboardHeight(notification), up: true)
-            keyboardIsShowing = true
+        if view.frame.origin.y == 0.0 {
+            view.frame.origin.y -= getKeyboardHeight(notification)
         }
     }
     
     func keyboardWillHide(notification: NSNotification) {
-        if keyboardIsShowing! {
-            moveViewVertically(getKeyboardHeight(notification), up: false)
-            keyboardIsShowing = false
+        if view.frame.origin.y != 0.0 {
+            view.frame.origin.y += getKeyboardHeight(notification)
         }
-    }
-    
-    func moveViewVertically(distance: CGFloat, up: Bool) {
-        let dist = distance * (up ? -1 : 1)
-        view.frame.origin.y += dist
     }
     
     func getKeyboardHeight(notification: NSNotification) -> CGFloat {
