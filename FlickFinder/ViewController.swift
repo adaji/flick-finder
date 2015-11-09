@@ -8,7 +8,7 @@
 
 import UIKit
 
-// MARK: Globals
+// MARK: - Globals
 
 let BASE_URL = "https://api.flickr.com/services/rest/"
 let METHOD_NAME = "flickr.photos.search"
@@ -24,18 +24,30 @@ let LAT_MAX = 90.0
 let LON_MIN = -180.0
 let LON_MAX = 180.0
 
+// MARK: - String Extension
+
+extension String {
+    func toDouble() -> Double? {
+        return NSNumberFormatter().numberFromString(self)?.doubleValue
+    }
+}
+
+// MARK: - View Controller: UIViewController
+
 class ViewController: UIViewController, UITextFieldDelegate {
     
     // MARK: Properties
 
     @IBOutlet weak var imageView: UIImageView!
-    @IBOutlet weak var imageLabel: UILabel!
-    @IBOutlet weak var phraseField: UITextField!
-    @IBOutlet weak var latitudeField: UITextField!
-    @IBOutlet weak var longitudeField: UITextField!
-    @IBOutlet weak var titleLabel: UILabel!
+    @IBOutlet weak var messageLabel: UILabel!
+    @IBOutlet weak var phraseTextField: UITextField!
+    @IBOutlet weak var latitudeTextField: UITextField!
+    @IBOutlet weak var longitudeTextField: UITextField!
+    @IBOutlet weak var imageTitleLabel: UILabel!
     
     var tapRecognizer: UITapGestureRecognizer? = nil
+    
+    var currentKeyboardHeight: CGFloat? = 0
     
     // MARK: Actions
     
@@ -43,62 +55,162 @@ class ViewController: UIViewController, UITextFieldDelegate {
         searchImageByPhrase()
     }
     
-    func searchImageByPhrase() {
-        if phraseField.isFirstResponder() {
-            phraseField.resignFirstResponder()
-        }
-        
-        resetView()
-
-        let phrase = phraseField.text!
-        imageLabel.text = "Searching for \(phrase) image..."
-        titleLabel.text = "(\(phrase)) "
-        phraseField.text = ""
-
-        let methodArguments = [
-            "method": METHOD_NAME,
-            "api_key": API_KEY,
-            "text": phrase,
-            "safe_search": SAFE_SEARCH,
-            "extras": EXTRAS,
-            "format": DATA_FORMAT,
-            "nojsoncallback": NO_JSON_CALLBACK
-        ]
-        getImageFromFlickr(methodArguments)
-    }
-    
     @IBAction func searchByLatLon(sender: UIButton) {
         searchImageByLatLon()
     }
     
-    func searchImageByLatLon() {
-        if latitudeField.isFirstResponder() {
-            latitudeField.resignFirstResponder()
+    // MARK: Life Cycle
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        tapRecognizer = UITapGestureRecognizer(target: self, action: "handleSingleTap:")
+        tapRecognizer?.numberOfTapsRequired = 1
+        
+        phraseTextField.delegate = self
+        latitudeTextField.delegate = self
+        longitudeTextField.delegate = self
+    }
+    
+    override func viewWillAppear(animated: Bool) {
+        super.viewWillAppear(animated)
+        
+        addKeyboardDismissRecognizer()
+        
+        subscribeToKeyboardNotifications()
+    }
+    
+    override func viewWillDisappear(animated: Bool) {
+        super.viewWillDisappear(animated)
+        
+        removeKeyboardDismissRecognizer()
+        
+        unsubscribeToKeyboardNotifications()
+    }
+    
+    // MARK: Text Field Delegate
+    
+    func textFieldShouldReturn(textField: UITextField) -> Bool {
+        if textField == phraseTextField {
+            textField.resignFirstResponder()
+            
+            searchImageByPhrase()
         }
-        else if longitudeField.isFirstResponder() {
-            longitudeField.isFirstResponder()
+        else if textField == latitudeTextField {
+            longitudeTextField.becomeFirstResponder()
+        }
+        else if textField == longitudeTextField {
+            textField.resignFirstResponder()
+            
+            searchImageByLatLon()
         }
         
+        return true
+    }
+    
+    // MARK: Search
+    
+    func searchImageByPhrase() {
+        dismissKeyboard()
+        
         resetView()
+        latitudeTextField.text = ""
+        longitudeTextField.text = ""
 
-        let lat = latitudeField.text!
-        let lon = longitudeField.text!
-        let loc = "(\(lat), \(lon))"
-        imageLabel.text = "Searching for image at \(loc)..."
-        titleLabel.text = "\(loc) "
-        latitudeField.text = ""
-        longitudeField.text = ""
-
-        let methodArguments = [
-            "method": METHOD_NAME,
-            "api_key": API_KEY,
-            "bbox": createBoundingBoxString(lat, longitude: lon),
-            "safe_search": SAFE_SEARCH,
-            "extras": EXTRAS,
-            "format": DATA_FORMAT,
-            "nojsoncallback": NO_JSON_CALLBACK
-        ]
-        getImageFromFlickr(methodArguments)
+        let phrase = phraseTextField.text!
+        if !phrase.isEmpty {
+            messageLabel.text = "Searching for \(phrase) image..."
+            imageTitleLabel.text = "(\(phrase)) "
+            
+            let methodArguments = [
+                "method": METHOD_NAME,
+                "api_key": API_KEY,
+                "text": phrase,
+                "safe_search": SAFE_SEARCH,
+                "extras": EXTRAS,
+                "format": DATA_FORMAT,
+                "nojsoncallback": NO_JSON_CALLBACK
+            ]
+            //            getImageFromFlickr(methodArguments)
+            getImageFromFlickrWithPage(methodArguments, pageNumber: 1)
+        } else {
+            displayErrorMessage("Phrase Empty.")
+        }
+    }
+    
+    func searchImageByLatLon() {
+        dismissKeyboard()
+        
+        resetView()
+        phraseTextField.text = ""
+        
+        if !latitudeTextField.text!.isEmpty && !longitudeTextField.text!.isEmpty {
+            if validLatitude() && validLongitude() {
+                let loc = getLatLonString()
+                messageLabel.text = "Searching for image at \(loc)..."
+                imageTitleLabel.text = "\(loc) "
+                
+                let methodArguments = [
+                    "method": METHOD_NAME,
+                    "api_key": API_KEY,
+                    "bbox": createBoundingBoxString(latitudeTextField.text!, longitude: longitudeTextField.text!),
+                    "safe_search": SAFE_SEARCH,
+                    "extras": EXTRAS,
+                    "format": DATA_FORMAT,
+                    "nojsoncallback": NO_JSON_CALLBACK
+                ]
+                //            getImageFromFlickr(methodArguments)
+                getImageFromFlickrWithPage(methodArguments, pageNumber: 1)
+            } else {
+                if !validLatitude() && !validLongitude() {
+                    displayErrorMessage("Lat/Lon Invalid.\nLat should be [-90, 90].\nLon should be [-180, 180].")
+                } else if !validLatitude() {
+                    displayErrorMessage("Lat Invalid.\nLat should be [-90, 90].")
+                } else {
+                    displayErrorMessage("Lon Invalid.\nLon should be [-180, 180].")
+                }
+            }
+        } else {
+            if latitudeTextField.text!.isEmpty && longitudeTextField.text!.isEmpty {
+                displayErrorMessage("Lat/Lon Empty.")
+            } else if latitudeTextField.text!.isEmpty {
+                displayErrorMessage("Lat Empty.")
+            } else {
+                displayErrorMessage("Lon Empty.")
+            }
+        }
+    }
+    
+    // MARK: Lat/Lon Manipulation
+    
+    // Check to make sure the latitude falls within [-90, 90]
+    func validLatitude() -> Bool {
+        if let latitude: Double? = latitudeTextField.text!.toDouble() {
+            if latitude < LAT_MIN || latitude > LAT_MAX {
+                return false
+            }
+        } else {
+            return false
+        }
+        return true
+    }
+    
+    // Check to make sure the longitude falls within [-180, 180]
+    func validLongitude() -> Bool {
+        if let longitude: Double? = longitudeTextField.text!.toDouble() {
+            if longitude < LON_MIN || longitude > LON_MAX {
+                return false
+            }
+        } else {
+            return false
+        }
+        return true
+    }
+    
+    func getLatLonString() -> String {
+        let latitude = (latitudeTextField.text! as NSString).doubleValue
+        let longitude = (longitudeTextField.text! as NSString).doubleValue
+        return "(\(latitude), \(longitude))"
     }
     
     func createBoundingBoxString(latitude: String, longitude: String) -> String {
@@ -113,7 +225,8 @@ class ViewController: UIViewController, UITextFieldDelegate {
     
     // MARK: Flickr API
     
-    func getImageFromFlickr(methodArguments: [String: String]) {
+    // This function makes the first request to get a random page number, then it makes a request to get an image with the random page
+    func getImageFromFlickr(methodArguments: [String: AnyObject]) {
         let session = NSURLSession.sharedSession()
         let urlString = BASE_URL + escapedParameters(methodArguments)
         let request = NSURLRequest(URL: NSURL(string: urlString)!)
@@ -127,6 +240,40 @@ class ViewController: UIViewController, UITextFieldDelegate {
                 do {
                     parsedResult = try NSJSONSerialization.JSONObjectWithData(data!, options: .AllowFragments) as! NSDictionary
 
+                    if let totalPages = parsedResult["pages"] as? Int {
+                        let pageLimit = min(totalPages, 40)
+                        let randomPage = Int(arc4random_uniform(UInt32(pageLimit))) + 1
+                        self.getImageFromFlickrWithPage(methodArguments, pageNumber: randomPage)
+                    }
+                    
+                } catch {
+                    parsedResult = nil
+                    print("Could not parse the data as JSON: '\(data)'")
+                    return
+                }
+            }
+        }
+        
+        task.resume()
+    }
+    
+    func getImageFromFlickrWithPage(methodArguments: [String: AnyObject], pageNumber: Int) {
+        var withPageDictionary = methodArguments
+        withPageDictionary["page"] = pageNumber
+        
+        let session = NSURLSession.sharedSession()
+        let urlString = BASE_URL + escapedParameters(withPageDictionary)
+        let request = NSURLRequest(URL: NSURL(string: urlString)!)
+        
+        let task = session.dataTaskWithRequest(request) { (data, response, downloadError) in
+            
+            if let error = downloadError {
+                print("Could not complete the request \(error)")
+            } else {
+                let parsedResult: AnyObject!
+                do {
+                    parsedResult = try NSJSONSerialization.JSONObjectWithData(data!, options: .AllowFragments) as! NSDictionary
+                    
                     if let photosDictionary = parsedResult["photos"] as? [String: AnyObject] {
                         var totalVar = 0
                         if let total = photosDictionary["total"] as? String {
@@ -142,9 +289,9 @@ class ViewController: UIViewController, UITextFieldDelegate {
                                     let imageUrl = NSURL(string: imageUrlString)
                                     if let imageData = NSData(contentsOfURL: imageUrl!) {
                                         dispatch_async(dispatch_get_main_queue(), {
-                                            self.imageLabel.alpha = 0.0 // * Is this more efficient than ".hidden = true" ?
+                                            self.messageLabel.alpha = 0.0 // * Is this more efficient than ".hidden = true" ?
                                             self.imageView.image = UIImage(data: imageData)
-                                            self.titleLabel.text = self.titleLabel.text! + (imageTitle ?? "(Untitled)")
+                                            self.imageTitleLabel.text = self.imageTitleLabel.text! + (imageTitle ?? "(Untitled)")
                                         })
                                     }
                                 }
@@ -152,7 +299,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
                         } else {
                             dispatch_async(dispatch_get_main_queue(), {
                                 self.resetView()
-                                self.imageLabel.text = "No photos found. Search again."
+                                self.messageLabel.text = "No photos found. Search again."
                             })
                         }
                     }
@@ -168,58 +315,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
         task.resume()
     }
     
-    // MARK: Life Cycle
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        
-        tapRecognizer = UITapGestureRecognizer(target: self, action: "handleSingleTap:")
-        tapRecognizer?.numberOfTapsRequired = 1
-
-        phraseField.delegate = self
-        latitudeField.delegate = self
-        longitudeField.delegate = self
-    }
-    
-    override func viewWillAppear(animated: Bool) {
-        super.viewWillAppear(animated)
-
-        addKeyboardDismissRecognizer()
-
-        subscribeToKeyboardNotifications()
-    }
-    
-    override func viewWillDisappear(animated: Bool) {
-        super.viewWillDisappear(animated)
-        
-        removeKeyboardDismissRecognizer()
-
-        unsubscribeToKeyboardNotifications()
-    }
-
-    // MARK: Text Field Delegate
-    
-    func textFieldShouldReturn(textField: UITextField) -> Bool {
-        if textField == phraseField {
-            textField.resignFirstResponder()
-            
-            searchImageByPhrase()
-        }
-        else if textField == latitudeField {
-            longitudeField.becomeFirstResponder()
-        }
-        else if textField == longitudeField {
-            textField.resignFirstResponder()
-            
-            searchImageByLatLon()
-        }
-        
-        return true
-    }
-    
     // MARK: Show/Hide Keyboard
-    
-    // Adjust view frame when keyboard shows/hides
     
     func addKeyboardDismissRecognizer() {
         view.addGestureRecognizer(tapRecognizer!)
@@ -244,13 +340,19 @@ class ViewController: UIViewController, UITextFieldDelegate {
     
     func keyboardWillShow(notification: NSNotification) {
         if view.frame.origin.y == 0.0 {
-            view.frame.origin.y -= getKeyboardHeight(notification)
+            if currentKeyboardHeight == 0.0 {
+                currentKeyboardHeight = getKeyboardHeight(notification)
+                view.frame.origin.y -= currentKeyboardHeight! / 2 + 30.0
+            }
         }
     }
     
     func keyboardWillHide(notification: NSNotification) {
         if view.frame.origin.y != 0.0 {
-            view.frame.origin.y += getKeyboardHeight(notification)
+            if currentKeyboardHeight != 0.0 {
+                view.frame.origin.y += currentKeyboardHeight! / 2 + 30.0
+                currentKeyboardHeight = 0.0
+            }
         }
     }
     
@@ -260,15 +362,8 @@ class ViewController: UIViewController, UITextFieldDelegate {
         return keyboardSize.CGRectValue().height
     }
     
-    // MARK: Helper Functions
+    // MARK: Escape HTML Parameters
     
-    func resetView() {
-        imageView.image = nil
-        imageLabel.alpha = 1.0
-        titleLabel.text = ""
-    }
-    
-    /* Helper function: Given a dictionary of parameters, convert to a string for a url */
     func escapedParameters(parameters: [String : AnyObject]) -> String {
         
         var urlVars = [String]()
@@ -290,4 +385,37 @@ class ViewController: UIViewController, UITextFieldDelegate {
     }
     
 }
+
+// MARK: - ViewController Extension
+
+extension ViewController {
+    func resetView() {
+        imageView.image = nil
+        messageLabel.textColor = UIColor.whiteColor()
+        messageLabel.alpha = 1.0
+        imageTitleLabel.text = ""
+    }
+    
+    func displayErrorMessage(message: String) {
+        messageLabel.textColor = UIColor.redColor()
+        messageLabel.text = message
+    }
+    
+    func dismissKeyboard() {
+        if phraseTextField.isFirstResponder() || latitudeTextField.isFirstResponder() || longitudeTextField.isFirstResponder() {
+            view.endEditing(true)
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
 
